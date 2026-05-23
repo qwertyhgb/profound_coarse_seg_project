@@ -1,0 +1,11 @@
+torch
+torchvision
+monai
+numpy
+pandas
+scipy
+pyyaml
+tqdm
+tensorboard
+matplotlib
+scikit-image

@@ -1,0 +1,13 @@
+case_id,reason,gt_lesions,hit_lesions_final,missed_lesions,gt_voxels,final_dice,final_precision,final_recall,final_pred_voxels,final_pred_components,final_fp_components,prompts,gt_prompts,kept_prompts,kept_gt_prompts,max_objectness_any_prompt,max_objectness_gt_prompt,gt_prompt_ranks,kept_gt_prompt_ranks,source_thresholds
+10182_1000185,D_refined_mask_missed_gt_despite_kept_prompt,1,0,1,747,0.0,0.0,0.0,3138,4,4,5,2,3,1,0.9899978041648864,0.6428442001342773,3;4,3,0.1;0.25
+10334_1000340,B_gt_prompt_filtered_by_objectness,1,0,1,87,0.0,0.0,0.0,0,0,0,8,2,1,0,0.0271781254559755,0.0123990150168538,4;5,,0.1;0.2;0.25
+10433_1000441,D_refined_mask_missed_gt_despite_kept_prompt,1,0,1,264,0.0,0.0,0.0,451,9,9,8,2,6,2,0.9896989464759828,0.904462456703186,3;6,3;6,0.1;0.15;0.2;0.25
+10605_1000619,B_gt_prompt_filtered_by_objectness,1,0,1,555,0.0,0.0,0.0,272,2,2,8,1,2,0,0.4013178944587707,0.0297718401998281,6,,0.1;0.2;0.25
+10872_1000888,B_gt_prompt_filtered_by_objectness,1,0,1,3381,0.0,0.0,0.0,0,0,0,4,2,1,0,0.0696474760770797,0.062874399125576,1;3,,0.1
+10915_1000932,A_no_gt_overlapping_prompt,1,0,1,66,0.0,0.0,0.0,1131,1,1,1,0,1,0,0.9930598735809326,-1.0,,,0.1
+11009_1001029,A_no_gt_overlapping_prompt,1,0,1,400,0.0,0.0,0.0,270,1,1,6,0,1,0,0.2740785479545593,-1.0,,,0.1;0.2
+11143_1001166,A_no_gt_overlapping_prompt,1,0,1,96,0.0,0.0,0.0,927,1,1,2,0,1,0,0.9922035932540894,-1.0,,,0.1;0.15
+11231_1001254,A_no_gt_overlapping_prompt,1,0,1,84,0.0,0.0,0.0,0,0,0,1,0,1,0,0.1574024558067321,-1.0,,,0.1
+11258_1001281,D_refined_mask_missed_gt_despite_kept_prompt,1,0,1,444,0.0,0.0,0.0,786,2,2,3,1,1,1,0.996343433856964,0.996343433856964,1,1,0.1;0.2
+11357_1001380,A_no_gt_overlapping_prompt,1,0,1,415,0.0,0.0,0.0,0,0,0,8,0,1,0,0.0249260421842336,-1.0,,,0.1;0.2
+11425_1001449,E_multi_lesion_partial_hit,2,1,1,20625,0.8083449356073791,0.7331018427179102,0.9008,25343,1,0,4,3,3,2,0.9465689659118652,0.9465689659118652,1;3;4,1;3,0.1;0.2

@@ -1,0 +1,17 @@
+case_id,v2_reason,v3_prompts,v3_gt_hit_prompts,v3_best_prob,v3_thresholds
+10106_1000106,E_multi_lesion_partial_hit,3,2,0.9999756813049316,"0.1,0.15"
+10334_1000340,A_stage1_or_postprocess_no_gt_prompt,8,2,0.9861891865730286,"0.1,0.2,0.25"
+10433_1000441,A_stage1_or_postprocess_no_gt_prompt,8,2,0.9603818655014038,"0.1,0.15,0.2,0.25"
+10605_1000619,B_objectness_filtered_gt_prompt,8,1,0.8481550812721252,"0.1,0.2,0.25"
+10651_1000667,B_objectness_filtered_gt_prompt,8,1,0.9652023911476136,"0.1,0.15,0.25"
+10700_1000716,B_objectness_filtered_gt_prompt,6,2,0.9285054206848145,"0.1,0.15,0.2,0.25"
+10728_1000744,B_objectness_filtered_gt_prompt,6,1,0.7339355945587158,"0.1,0.2,0.25"
+10915_1000932,A_stage1_or_postprocess_no_gt_prompt,1,0,0.9999960660934448,0.1
+11009_1001029,A_stage1_or_postprocess_no_gt_prompt,6,0,0.9982116222381592,"0.1,0.2"
+11143_1001166,A_stage1_or_postprocess_no_gt_prompt,2,0,0.854854166507721,"0.1,0.15"
+11231_1001254,A_stage1_or_postprocess_no_gt_prompt,1,0,0.7826305627822876,0.1
+11258_1001281,D_refined_mask_missed_gt_despite_kept_prompt,3,1,0.9999970197677612,"0.1,0.2"
+11280_1001303,B_objectness_filtered_gt_prompt,4,2,0.7840688228607178,"0.1,0.25"
+11284_1001307,B_objectness_filtered_gt_prompt,4,1,0.981835126876831,"0.1,0.2"
+11357_1001380,A_stage1_or_postprocess_no_gt_prompt,8,0,0.795314610004425,"0.1,0.2"
+11425_1001449,E_multi_lesion_partial_hit,4,3,0.9999991655349731,"0.1,0.2"

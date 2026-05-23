@@ -1,0 +1,18 @@
+{
+  "checkpoint": "outputs/coarse_score_es_3090/fold_0/stage2_refinement_v2_objectness/checkpoints/best_by_val_recall_safe_dice.pth",
+  "prompt_csv": "outputs/coarse_score_es_3090/fold_0/stage2_data/val/postprocess_sweep/coarse_prompts.csv",
+  "mask_threshold": 0.5,
+  "use_objectness_filter": false,
+  "weight_by_objectness": false,
+  "objectness_threshold": 0.5,
+  "cases": 289,
+  "dice": 0.363492380497547,
+  "precision": 0.24227481919789612,
+  "recall": 0.7274660957451985,
+  "lesion_recall": 0.8850574712643678,
+  "hit_lesions": 77.0,
+  "total_gt_lesions": 87.0,
+  "pred_components_per_case": 2.7197231833910034,
+  "fp_components_per_case": 2.4394463667820068,
+  "component_precision": 0.10305343511450382
+}

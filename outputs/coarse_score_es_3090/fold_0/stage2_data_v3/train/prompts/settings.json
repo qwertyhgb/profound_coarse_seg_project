@@ -1,0 +1,12 @@
+{
+  "processed_root": "../picai_preprocessing_project/data/processed/picai_profound_prompt_v2",
+  "coarse_pred_root": "outputs/coarse_score_es_3090/fold_0/stage2_data/train/coarse_predictions",
+  "split": "data/splits/5fold/fold_0/train.txt",
+  "output_dir": "outputs/coarse_score_es_3090/fold_0/stage2_data_v3/train/prompts",
+  "thresholds": "0.10,0.15,0.20,0.25",
+  "min_component_sizes": "30,20,10,5",
+  "top_k_per_case": 8,
+  "dedup_box_iou": 0.2,
+  "rank_by": "max_probability",
+  "include_gt_hit": true
+}

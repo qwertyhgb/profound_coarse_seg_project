@@ -1,0 +1,37 @@
+{
+  "total_cases": 296,
+  "positive_cases": 85,
+  "negative_cases": 211,
+  "errors": 0,
+  "channel_mode": "avg",
+  "roi_size": [
+    128,
+    128,
+    128
+  ],
+  "checkpoint": "/opt/data/private/lm/project-segmentation-for-MIR/SAM-Med3D/ckpt/sam_med3d_turbo.pth",
+  "overall_dice": 0.0011580327719096953,
+  "positive_case_dice": 0.004032678829238468,
+  "lesion_recall": 0.632183908045977,
+  "total_gt_lesions": 87,
+  "total_hit_lesions": 55,
+  "true_negative_rate": 0.0,
+  "bucket_dice": {
+    "100_500": {
+      "mean": 1.3810700361105432e-09,
+      "n": 2
+    },
+    "500_1k": {
+      "mean": 0.0004184109830123406,
+      "n": 5
+    },
+    "1k_5k": {
+      "mean": 0.003733082546106812,
+      "n": 21
+    },
+    "gt_5k": {
+      "mean": 0.004601594900698684,
+      "n": 57
+    }
+  }
+}

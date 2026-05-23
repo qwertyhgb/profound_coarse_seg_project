@@ -1,0 +1,46 @@
+project:
+  name: profound_coarse_infer_single_case
+  seed: 42
+  device: cuda
+model:
+  checkpoint_path: ../ProFound/checkpoint/checkpoint-799 1.pth
+  profound_repo_path: ../ProFound
+  profound_model_import_path: models.convnextv2:convnextv2_tiny
+  freeze_encoder: true
+  strict_load: false
+  profound_checkpoint_format: profound_convnextv2_pretrain
+  profound_model_kwargs:
+    in_chans: 3
+    drop_path_rate: 0.1
+  return_multi_scale_features: true
+  encoder_channels:
+  - 96
+  - 192
+  - 384
+  - 768
+  use_lesion_aware_enhancement: true
+  decoder_channels:
+  - 256
+  - 128
+  - 64
+  - 32
+  out_channels: 1
+  return_aux: false
+  use_modality_aware_fusion: true
+  modality_fusion_hidden_channels: 16
+  modality_fusion_residual_scale: 0.1
+inference:
+  checkpoint_path: outputs/coarse_score_es_3090/fold_0/checkpoints/best_by_val_threshold_sweep_coarse_score.pth
+  npz_path: null
+  output_dir: outputs/coarse_score_es_3090/fold_0/inference/predictions
+  use_sliding_window: true
+  roi_size:
+  - 64
+  - 128
+  - 128
+  sw_batch_size: 4
+  overlap: 0.25
+  save_png: true
+  segmentation_threshold: 0.5
+  prompt_generation_threshold: 0.25
+  visualization_dir: outputs/coarse_score_es_3090/fold_0/inference/visualizations

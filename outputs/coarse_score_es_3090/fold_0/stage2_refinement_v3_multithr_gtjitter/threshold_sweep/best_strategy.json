@@ -1,0 +1,20 @@
+{
+  "mask_threshold": 0.6,
+  "use_objectness_filter": true,
+  "objectness_threshold": 0.1,
+  "weight_by_objectness": false,
+  "cases": 296,
+  "positive_cases": 85,
+  "kept_prompts": 458,
+  "min_prompts_per_case": 1,
+  "dice": 0.4595123824150509,
+  "precision": 0.34033669673206113,
+  "recall": 0.7071270184414122,
+  "lesion_recall": 0.8620689655172413,
+  "hit_lesions": 75.0,
+  "total_gt_lesions": 87.0,
+  "pred_components_per_case": 1.7297297297297298,
+  "fp_components_per_case": 1.4695945945945945,
+  "component_precision": 0.150390625,
+  "selection_score": 0.8593794935534365
+}

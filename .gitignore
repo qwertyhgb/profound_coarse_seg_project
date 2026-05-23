@@ -1,0 +1,78 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ─── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# ─── Model checkpoints (large binary files) ───────────────────────────────────
+# Covers all experiment subdirectories: outputs/<exp>/fold_<k>/checkpoints/
+outputs/**/checkpoints/*.pth
+outputs/**/checkpoints/*.pt
+outputs/**/checkpoints/*.ckpt
+
+# ─── Training logs ────────────────────────────────────────────────────────────
+outputs/**/logs/*.csv
+outputs/**/logs/*.log
+outputs/**/run_stdout.log
+outputs/**/tensorboard/
+
+# ─── Inference / prediction outputs ──────────────────────────────────────────
+outputs/**/predictions/
+outputs/**/inference/
+outputs/**/stage2_data/
+outputs/**/*.npz
+outputs/**/*.nii.gz
+outputs/**/*.nii
+outputs/**/*.mha
+
+# ─── Evaluation results (keep summary JSONs, ignore large case-level files) ──
+# Keep: outputs/**/summary.json  (small, useful for tracking)
+# Ignore: large per-case result files
+outputs/**/case_results.json
+outputs/**/postprocess_sweep/
+outputs/**/proposal_reports/
+
+# ─── Visualization outputs ────────────────────────────────────────────────────
+outputs/**/*.png
+outputs/**/*.jpg
+outputs/**/*.pdf
+outputs/**/_debug/
+
+# ─── Data: processed NPZ files (large, not for version control) ───────────────
+data/processed/
+# Keep: data/splits/ (small text files, important for reproducibility)
+
+# ─── Backup files ─────────────────────────────────────────────────────────────
+*.bak
+*.bak_*
+*.backup
+*~
+
+# ─── IDE / OS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# ─── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.tmp
+*.temp

@@ -1,0 +1,249 @@
+# PCaSAM-3D-ProFound Stage 1: Balanced High-Recall Coarse Proposal Pretraining (V3)
+#
+# Goal: Train the coarse branch to achieve lesion_recall ≥ 0.90 with controlled FP.
+# This checkpoint will be loaded into the full PCaSAM-3D model for joint training.
+#
+# Key principle: "不漏检" — missed lesions can never be recovered by downstream SAM.
+#
+# Literature basis:
+#   1. Tversky Loss (arXiv 1706.05721): α=0.3, β=0.7 achieves best recall-precision
+#      trade-off for small lesion segmentation. β>0.7 causes training instability.
+#   2. Focal Tversky (arXiv 1810.07842): γ=4/3 focuses on hard examples without
+#      destabilizing training. Higher γ risks gradient explosion on easy negatives.
+#   3. Component-Adaptive Tversky (arXiv 2604.08015, 2025): reweights voxel
+#      contributions per connected component, preventing large lesions from
+#      dominating the loss while small lesions are ignored.
+#   4. PI-CAI Cascaded Detection (Radiology 2024): sensitivity 0.85 at 0.5 FP/vol
+#      and 0.88 at 1 FP/vol — our target operating point.
+#   5. PCaSAM (Nature Digital Medicine 2025): coarse segmentation trained
+#      independently with full supervision weight before prompt generation.
+#   6. Conformal Lesion Segmentation (arXiv 2510.17897): threshold calibration
+#      via FNR tolerance — motivates our multi-threshold sweep evaluation.
+#
+# V3 changes from V2 after fold_0 analysis:
+#   - Fix checkpoint selection: penalize low positive-case Dice so epoch-1 recall-only masks cannot win.
+#   - Disable objectness auxiliary loss because pos/neg probabilities collapsed to almost the same value.
+#   - Extend threshold sweep to 0.03 and 0.60 for better calibration diagnostics.
+#   - Use a practical voxel-recall target for recall_safe_dice while keeping lesion recall in coarse_score.
+#
+# Changes from previous stage1_coarse config:
+#   - fn_weight: 0.9→0.7 (arXiv 1706.05721 recommends 0.7 as optimal)
+#   - bce_pos_weight: 8.0→4.0 (less extreme, avoids probability saturation)
+#   - coarse_threshold: 0.05→0.20 (meaningful evaluation threshold)
+#   - threshold_sweep: extended to [0.05–0.50] for proper operating point selection
+#   - bridge_lr: 8e-5→1e-4 (match successful Stage-1 head_lr)
+#   - positive_case_ratio: 0.7→0.8 (match successful Stage-1)
+#   - Added 3D data augmentation (flip + intensity + noise)
+#   - epochs: 50→80 with patience 20
+#   - Added lesion-level recall monitoring (component-level)
+
+project:
+  name: pcasam3d_profound
+  seed: 42
+  device: cuda
+
+data:
+  processed_root: ../picai_preprocessing_project/data/processed/picai_profound_prompt_v2
+  train_split: data/splits/5fold/fold_0/train.txt
+  val_split: data/splits/5fold/fold_0/val.txt
+  patch_size: [128, 128, 128]
+  use_lesion_aware_sampling: true
+  # High positive exposure: 80% positive cases, 85% patches centered on lesions.
+  # PCaSAM and PI-CAI baselines both use aggressive positive sampling for recall.
+  pos_patch_ratio: 0.85
+  positive_case_ratio: 0.8
+  normalize: channelwise_nonzero
+  batch_size: 4
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  max_train_cases: null
+  max_val_cases: null
+  # 3D augmentation for regularization (arXiv 2505.04097)
+  augmentation:
+    enabled: true
+    random_flip_prob: 0.5
+    random_flip_axes: [0, 1, 2]
+    intensity_shift_range: 0.1
+    intensity_scale_range: 0.1
+    gaussian_noise_std: 0.02
+
+model:
+  name: pcasam3d_profound
+  # ProFound-Conv encoder (frozen, domain-specific features)
+  profound_checkpoint_path: ../ProFound/checkpoint/checkpoint-799 1.pth
+  profound_repo_path: ../ProFound
+  profound_model_import_path: "models.convnextv2:convnextv2_tiny"
+  profound_model_kwargs:
+    in_chans: 3
+    drop_path_rate: 0.1
+  profound_checkpoint_format: profound_convnextv2_pretrain
+  freeze_encoder: true
+  unfreeze_last_n_stages: null
+  encoder_channels: [96, 192, 384, 768]
+  # Enhancement: SE + spatial gate on deepest features
+  use_lesion_aware_enhancement: true
+  # Modality fusion with ADC-guided dropout
+  use_modality_aware_fusion: true
+  modality_fusion_hidden_channels: 16
+  modality_fusion_residual_scale: 0.1
+  modality_dropout:
+    prob: 0.12
+    probs: [0.16, 0.06, 0.16]
+    keep_at_least: 2
+  modality_gate_prior: [0.45, 0.60, 0.45]
+  # SAM decoder: loaded but NOT used in stage=coarse (forward_coarse skips it)
+  sam_checkpoint_path: /opt/data/private/lm/project-segmentation-for-MIR/SAM-Med3D/ckpt/sam_med3d_turbo.pth
+  sam_embed_dim: 384
+  sam_image_size: 128
+  freeze_sam_decoder: true
+  # Feature bridge: NOT trained in stage=coarse
+  bridge_use_stage2: true
+  bridge_norm: layer
+  # Cross-attention: NOT trained in stage=coarse
+  use_modality_cross_attention: true
+  cross_attn_num_heads: 6
+  cross_attn_reduction: 4
+  # Coarse branch: THIS is what we're training
+  coarse_hidden_dim: 64
+  # High-res refinement: NOT used in stage=coarse
+  use_high_res_refinement: true
+  high_res_refinement_hidden_dim: 32
+  high_res_refinement_scale: 0.5
+  # Auto prompt config (used for validation metrics only in coarse stage)
+  coarse_threshold: 0.15
+  max_proposals: 5
+  min_component_voxels: 30
+  point_type: centroid
+  no_prompt_if_empty: true
+  no_prompt_threshold: 0.02
+  use_box_prompts: true
+  box_margin_voxels: 6
+  soft_box_std_scale: 2.0
+  training_point_mode: topk_peaks
+  training_nms_kernel: 9
+  train_hard_prompt_prob: 0.0
+  training_use_soft_box: false
+  use_objectness_gate: false
+  objectness_threshold: 0.20
+  prompt_dropout:
+    enabled: false
+    drop_point_prob: 0.0
+    drop_box_prob: 0.0
+    drop_mask_prob: 0.0
+  zoom_margin_voxels: 8
+  zoom_min_size_voxels: 24
+  use_mask_prior: true
+  return_dict: true
+
+loss:
+  # ─── Refined loss: DISABLED (refined_weight=0) ───
+  refined_dice_weight: 1.0
+  refined_focal_tversky_weight: 0.7
+  refined_bce_weight: 0.3
+  refined_tversky_fn_weight: 0.7
+  refined_tversky_fp_weight: 0.3
+  refined_focal_gamma: 1.333
+  refined_bce_pos_weight: 3.0
+  # ─── Coarse loss: PRIMARY (coarse_weight=1.0) ───
+  # Tversky α=0.3 (FP weight), β=0.7 (FN weight)
+  # arXiv 1706.05721: "β=0.7 achieves best trade-off for lesion segmentation"
+  # arXiv 1810.07842: "Focal Tversky with γ=4/3 further improves small lesion recall"
+  # We do NOT use β=0.9 because it causes training instability (validated in V3).
+  coarse_dice_weight: 1.0
+  coarse_focal_tversky_weight: 1.0
+  coarse_tversky_fn_weight: 0.7
+  coarse_tversky_fp_weight: 0.3
+  coarse_focal_gamma: 1.333
+  # BCE with moderate pos_weight for probability calibration.
+  # pos_weight=4.0 compensates for ~28% positive rate without saturating probabilities.
+  coarse_bce_weight: 0.3
+  coarse_bce_pos_weight: 4.0
+  # Deep supervision on stage2/stage3 auxiliary heads
+  coarse_aux_weight: 0.25
+  # ─── Task weights ───
+  refined_weight: 0.0    # SAM decoder not used
+  coarse_weight: 1.0     # Full weight on coarse branch
+  iou_weight: 0.0        # No IoU prediction in coarse stage
+  # Disabled for V3: the previous run kept pos/neg objectness probabilities nearly identical.
+  objectness_weight: 0.0
+  objectness_pos_weight: 1.0
+  use_iou_loss: false
+
+optimizer:
+  name: AdamW
+  encoder_lr: 0.0        # ProFound frozen
+  # Coarse branch + modality fusion + enhancement + objectness
+  # Match successful Stage-1 head_lr=1e-4
+  bridge_lr: 1.0e-4
+  decoder_lr: 0.0        # SAM decoder frozen
+  weight_decay: 3.0e-4
+
+scheduler:
+  name: cosine
+  min_lr: 1.0e-6
+
+# No prompt curriculum in coarse stage (no SAM decoder involved)
+prompt_curriculum:
+  enabled: false
+
+training:
+  epochs: 80
+  amp: true
+  grad_clip_norm: 12.0
+  save_every: 5
+  validate_every: 1
+  # CRITICAL: stage=coarse routes through forward_coarse(), only trains
+  # modality_fusion + enhancement + coarse_branch + objectness_head
+  stage: coarse
+  resume_from: null
+
+selection:
+  # Target: lesion_recall ≥ 0.90 at the selected operating threshold.
+  # PI-CAI cascaded detection achieves sensitivity=0.85 at 0.5 FP/vol (Radiology 2024).
+  # We target higher recall because downstream SAM can suppress FP but cannot recover FN.
+  # Voxel-level positive recall target for recall_safe_dice. Lesion-level recall is enforced
+  # separately by coarse_score; 0.60 avoids over-penalizing compact but useful proposals.
+  min_recall: 0.60
+
+early_stopping:
+  enabled: true
+  # Monitor the threshold-sweep coarse_score: this finds the best operating point
+  # across multiple thresholds and rewards high lesion_recall with FP penalty.
+  monitor: val_threshold_sweep_best_coarse_score
+  mode: max
+  patience: 20
+  min_delta: 0.0005
+
+metrics:
+  # Primary evaluation threshold for coarse branch
+  threshold: 0.5
+  coarse_threshold: 0.20
+  # Minimum predicted component size (voxels) for lesion-level metrics.
+  # Small isolated FP clusters below this are discarded during evaluation.
+  # PI-CAI lesions are typically >50 voxels; 30 filters noise without losing real lesions.
+  min_pred_component_size: 30
+  # Comprehensive threshold sweep for operating point selection.
+  # Low thresholds (0.05–0.15) maximize recall for prompt generation.
+  # Higher thresholds (0.30–0.50) show precision-recall trade-off.
+  coarse_threshold_sweep: [0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60]
+  coarse_score:
+    # V3 score fixes the previous run: epoch 1 had perfect lesion recall but unusably low
+    # positive Dice. The selector now keeps recall dominant while rejecting poor masks.
+    lesion_recall_weight: 1.0
+    positive_dice_weight: 0.45
+    fp_components_penalty: 0.04
+    target_lesion_recall: 0.90
+    below_target_recall_penalty: 1.5
+    # Prevent early high-recall / low-quality masks from becoming best checkpoint.
+    target_positive_case_dice: 0.35
+    below_target_dice_penalty: 1.2
+    # Some false positives are acceptable for Stage-2 prompts, but very noisy outputs
+    # slow refinement and can dominate box/point proposal generation.
+    max_fp_components_per_case: 2.5
+    above_target_fp_penalty: 0.02
+
+logging:
+  experiment_name: pcasam3d_stage1_coarse_v3_balanced
+  output_root: outputs

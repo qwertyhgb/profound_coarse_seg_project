@@ -1,0 +1,9 @@
+{
+  "processed_root": "../picai_preprocessing_project/data/processed/picai_profound_prompt_v2",
+  "split": "data/splits/5fold/fold_0/train.txt",
+  "output": "outputs/coarse_score_es_3090/fold_0/stage2_data_v3/train/prompts/gt_jitter_prompts.csv",
+  "jitter_per_lesion": 3,
+  "margin_zyx": "3,8,8",
+  "jitter_zyx": "2,6,6",
+  "seed": 42
+}
