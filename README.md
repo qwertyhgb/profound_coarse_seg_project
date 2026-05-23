@@ -1,142 +1,133 @@
-# ProFound-Conv Coarse Lesion Segmentation Project
+# PCaSAM-3D-ProFound
 
-This is an independent Stage-1 training project for PI-CAI prostate cancer lesion segmentation. It trains a ProFound-Conv driven coarse lesion segmentation model that will later feed an automatic 3D promptable refinement stage.
+前列腺 mpMRI 临床显著前列腺癌（csPCa）病灶分割项目。将 ProFound-Conv 领域编码器、PCaSAM 风格自动提示生成与 SAM-Med3D 提示条件化解码器统一为一个端到端可训练模型。
 
-## Research Rationale
+**数据集**：PI-CAI（1500 cases，T2W/ADC/HBV 三模态 bpMRI）  
+**当前状态**：fold_0 实验完成，Stage 1 + Stage 2 均有可用 checkpoint
 
-- ProFound is a prostate mpMRI foundation model. This project uses ProFound-Conv, not ProFound-ViT, because dense 3D lesion segmentation benefits from convolutional spatial feature maps, local context, and small-lesion sensitivity.
-- PI-CAI bpMRI uses T2W, ADC, and high-b-value DWI/HBV as the core input channels.
-- PCaSAM motivates automatic prompt generation from a coarse segmentation mask; MedSAM shows box prompts provide strong spatial context; SAM-Med3D motivates volumetric promptable segmentation with 3D spatial prompts.
-- PI-CAI lesions are extremely sparse, so training uses lesion-aware volumetric patch sampling and validation reports both voxel-level metrics and lesion-level recall.
+---
 
-## Stage Scope
+## 目录
 
-Implemented now:
+- [项目概述](#项目概述)
+- [架构](#架构)
+- [环境依赖](#环境依赖)
+- [数据准备](#数据准备)
+- [训练流程](#训练流程)
+  - [Stage 1：粗分割预训练](#stage-1粗分割预训练)
+  - [Stage 2：提示条件化精细化](#stage-2提示条件化精细化)
+- [评估](#评估)
+- [调试](#调试)
+- [实验结果](#实验结果)
+- [输出目录规范](#输出目录规范)
+- [参考文献](#参考文献)
 
-`T2W/ADC/HBV -> ProFound-Conv encoder -> LesionAwareEnhancement3D -> UNetR3D-style decoder -> coarse logits`
+---
 
-Not implemented in Stage 1:
+## 项目概述
 
-- automatic 3D box prompt generation
-- 3D prompt encoder
-- prompt-conditioned mask decoder
-- refinement branch
+### 核心思路
 
-Placeholder files exist so Stage 2 can be added without restructuring.
+PI-CAI 前列腺癌病灶极小（中位 ~1248 voxels）、低对比度、稀疏分布，直接端到端分割困难。本项目采用两阶段策略：
 
-## Data
-
-Default config points to:
-
-```bash
-../picai_preprocessing_project/data/processed/picai_profound_prompt_v2
+```
+Stage 1: 高召回率粗分割  →  Stage 2: 提示条件化精细化
+  "不漏检"                    "减假阳性，精边界"
 ```
 
-Each `.npz` should contain:
+**Stage 1** 训练一个高召回率的粗分割模型（目标 lesion_recall ≥ 0.90），输出全分辨率概率图。漏检的病灶在下游永远无法恢复，因此召回优先于精度。
 
-- `image`: `[3, D, H, W]`, channel 0 T2W, channel 1 ADC, channel 2 HBV
-- `label`: `[1, D, H, W]`
-- `case_id`
-- optional `metadata_json`, `spacing_after_resample`, `processed_shape`
+**Stage 2** 从粗概率图自动生成 3D 点/框/mask 提示，送入 SAM-Med3D 解码器做精细化分割，抑制假阳性并改善边界质量。
 
-The project does not copy the 1500 NPZ files.
+### 与相关工作的关系
 
-## ProFound Dependency
+| 工作 | 本项目的借鉴 |
+|------|------------|
+| PCaSAM (Nature Digital Medicine 2025) | 粗分割 → 自动提示生成的两阶段框架 |
+| MedSAM (Nature Communications 2024) | 边界框提示提供强空间上下文 |
+| SAM-Med3D (arXiv 2310.15161) | 体积 3D 提示条件化分割 |
+| ProFound | 前列腺 mpMRI 基础模型，ConvNeXtV2 骨干 |
 
-This project does not fake ProFound with a generic CNN. To train the real model, configure:
+---
+
+## 架构
+
+```
+Input [B, 3, D, H, W]  (T2W / ADC / HBV)
+    │
+    ▼
+ModalityAwareFusion3D          ← 可学习模态门控，支持训练时随机 dropout
+    │
+    ▼
+ProFound-Conv Encoder          ← ConvNeXtV2-Tiny，前列腺 mpMRI 预训练，冻结
+  stage1: [B,  96, D/4,  H/4,  W/4]
+  stage2: [B, 192, D/8,  H/8,  W/8]
+  stage3: [B, 384, D/16, H/16, W/16]
+  stage4: [B, 768, D/32, H/32, W/32]
+    │
+    ├──────────────────────────────────────────┐
+    ▼                                          ▼
+CoarseBranch (FPN)                    ProFoundToSAMBridge
+  → coarse_logits [B,1,D,H,W]          → image_embedding [B,384,8,8,8]
+    │                                          │
+    ▼                                          │
+AutoPrompt3DFromCoarse                         │
+  → point_coords, box_coords                  │
+  → mask_prior [B,1,8,8,8]                    │
+    │                                          │
+    ▼                                          ▼
+SAM-Med3D PromptEncoder3D + MaskDecoder3D
+  → refined_logits [B,1,D,H,W]
+```
+
+**训练阶段划分**：
+
+| 阶段 | 训练模块 | 冻结模块 | 配置关键字 |
+|------|---------|---------|-----------|
+| `stage=coarse` | ModalityFusion, CoarseBranch | ProFound, SAM | Stage 1 |
+| `stage=prompt` | FeatureBridge, CrossAttention, HighResRefinement | ProFound, SAM 主体 | Stage 2 |
+| `stage=joint` | 全部非冻结模块 | ProFound | 端到端微调 |
+
+---
+
+## 环境依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+额外依赖（需手动配置路径）：
+
+- **ProFound**：`../ProFound/`，提供 ConvNeXtV2 编码器和预训练权重
+- **SAM-Med3D**：`../SAM-Med3D/`，提供 PromptEncoder3D 和 MaskDecoder3D
+
+在配置文件中指定路径：
 
 ```yaml
 model:
-  checkpoint_path: "/path/to/profound_conv_checkpoint.pth"
-  profound_repo_path: "/path/to/ProFound"
-  profound_model_import_path: "module.submodule:build_profound_conv"
+  profound_checkpoint_path: ../ProFound/checkpoint/checkpoint-799 1.pth
+  profound_repo_path: ../ProFound
+  profound_model_import_path: "models.convnextv2:convnextv2_tiny"
+  sam_checkpoint_path: /path/to/SAM-Med3D/ckpt/sam_med3d_turbo.pth
 ```
 
-If these are missing, real model construction raises a clear error. You can still run decoder-only smoke tests.
+---
 
-## Create Splits
+## 数据准备
 
-```bash
-cd profound_coarse_seg_project
-/root/anaconda3/envs/lm/bin/python scripts/create_splits.py   --processed-root ../picai_preprocessing_project/data/processed/picai_profound_prompt_v2
-```
+数据由 `../picai_preprocessing_project/` 预处理生成，每个 `.npz` 包含：
 
-The split script groups by `patient_id` when available, otherwise by the prefix of `case_id` before `_`.
+| 字段 | 形状 | 说明 |
+|------|------|------|
+| `image` | `[3, D, H, W]` float16 | T2W / ADC / HBV，percentile-clip + z-score 归一化 |
+| `label` | `[1, D, H, W]` uint8 | 二值病灶 mask |
+| `gland_mask` | `[1, D, H, W]` uint8 | AI 前列腺分割（Bosma22b） |
+| `boundary_uncertainty_mask` | `[1, D, H, W]` uint8 | 病灶边界不确定性 mask |
+| `metadata_json` | string | 临床信息、处理参数 |
 
-## Debug Forward
+预处理流程：T2W 空间对齐 → 1mm 等距重采样 → gland-bbox 裁剪 → 归一化。
 
-Decoder-only shape test, no ProFound required:
-
-```bash
-/root/anaconda3/envs/lm/bin/python scripts/debug_forward.py --mode decoder_only --shape 1 3 64 128 128
-```
-
-Real model test, requires configured ProFound:
-
-```bash
-/root/anaconda3/envs/lm/bin/python scripts/debug_forward.py --mode model --config configs/train_profound_coarse.yaml
-```
-
-## Overfit 8 Cases
-
-```bash
-/root/anaconda3/envs/lm/bin/python scripts/overfit_8cases.py --config configs/overfit_8cases.yaml
-```
-
-This is a sanity check only. It should reduce train loss and improve Dice when a valid ProFound encoder is configured.
-
-## Train
-
-```bash
-/root/anaconda3/envs/lm/bin/python scripts/train.py --config configs/train_profound_coarse.yaml
-```
-
-Checkpoints:
-
-- `outputs/checkpoints/best_by_val_dice.pth`
-- `outputs/checkpoints/last.pth`
-
-Logs:
-
-- `outputs/logs/train_log.csv`
-- `outputs/tensorboard/`
-
-## Validate and Test
-
-```bash
-/root/anaconda3/envs/lm/bin/python scripts/validate.py --config configs/train_profound_coarse.yaml --checkpoint outputs/checkpoints/best_by_val_dice.pth
-/root/anaconda3/envs/lm/bin/python scripts/test.py --config configs/train_profound_coarse.yaml --checkpoint outputs/checkpoints/best_by_val_dice.pth
-```
-
-## Single-Case Inference
-
-```bash
-/root/anaconda3/envs/lm/bin/python scripts/infer_single_case.py   --config configs/infer_single_case.yaml   --npz-path ../picai_preprocessing_project/data/processed/picai_profound_prompt_v2/all/10005_1000005.npz   --checkpoint outputs/checkpoints/best_by_val_dice.pth
-```
-
-Outputs are saved under `outputs/predictions/` as compressed NPZ containing logits, probability, and binary mask. These coarse probability maps are intended to drive later automatic prompt generation.
-
-## Freeze Encoder
-
-```yaml
-model:
-  freeze_encoder: true
-```
-
-When frozen, encoder parameters are excluded from the optimizer. Enhancement and decoder use `head_lr`; encoder uses `encoder_lr` only when trainable.
-
-## References
-
-- ProFound: prostate mpMRI foundation model and ProFound-Conv backbone.
-- PI-CAI: prostate bpMRI cancer detection/localization dataset.
-- PCaSAM: automatic prompt generation from coarse prostate cancer masks.
-- MedSAM: box-prompt medical image segmentation.
-- SAM-Med3D: volumetric 3D promptable medical segmentation.
-
-
-## 5-Fold Cross-Validation
-
-Stage 1 should be evaluated with the same cross-validation discipline as the later prompt/refinement stages, because the coarse probability map determines automatic 3D box, centroid, and uncertainty prompts. Generate patient-level stratified folds with:
+**生成数据划分**（已完成，结果在 `data/splits/5fold/`）：
 
 ```bash
 python scripts/create_folds.py \
@@ -145,337 +136,171 @@ python scripts/create_folds.py \
   --output-dir data/splits/5fold
 ```
 
-Train one fold with separated outputs:
+---
+
+## 训练流程
+
+### Stage 1：粗分割预训练
+
+目标：训练 CoarseBranch 达到 lesion_recall ≥ 0.90，为 Stage 2 提供高质量候选区域。
+
+**当前推荐配置**：`configs/train_pcasam3d_stage1_coarse_v4_data_opt.yaml`
+
+关键设计：
+- `normalize: preprocessed`（避免双重 z-score）
+- `gland_aware_negative_sampling: true`（90% 负样本在前列腺内，学习更难的假阳性抑制）
+- 验证时启用 gland mask 后处理（抑制解剖学不合理的预测）
+- 损失：Dice + Focal-Tversky（FN=0.7, FP=0.3）+ BCE，深度监督
 
 ```bash
-python scripts/train.py \
-  --config configs/train_profound_coarse.yaml \
-  --fold 0 \
-  --train-split data/splits/5fold/fold_0/train.txt \
-  --val-split data/splits/5fold/fold_0/val.txt
-```
-
-Evaluate the held-out fold:
-
-```bash
-python scripts/test.py \
-  --config configs/train_profound_coarse.yaml \
-  --checkpoint outputs/fold_0/checkpoints/best_by_val_dice.pth \
-  --split data/splits/5fold/fold_0/test.txt
-```
-
-Do not train a single Stage-1 model on all cases and use it to generate prompts for validation/test folds; that leaks information into the downstream promptable segmentation experiment.
-
-
-## Recall-Oriented Coarse Optimization
-
-For Stage 1, missing a lesion is more harmful than predicting a slightly larger coarse region because downstream automatic prompts are generated from the coarse probability map. The recall-oriented config uses:
-
-- lesion-aware sampling with more positive exposure,
-- Dice + Focal-Tversky + lightly weighted BCE,
-- `fn_weight > fp_weight` to penalize false negatives more strongly,
-- validation threshold `0.3` plus threshold sweep,
-- additional best checkpoints by `lesion_recall`, `positive_case_dice`, and `coarse_score`.
-
-Run one fold with:
-
-```bash
-python scripts/train.py \
-  --config configs/train_profound_coarse_recall.yaml \
-  --fold 0 \
-  --train-split data/splits/5fold/fold_0/train.txt \
-  --val-split data/splits/5fold/fold_0/val.txt
-```
-
-For downstream prompt generation, prefer `best_by_val_coarse_score.pth` or `best_by_val_lesion_recall.pth` over a checkpoint selected only by voxel Dice.
-
-
-## Experiment Naming
-
-All runs stay under `outputs/`. Use a name so experiments do not overwrite each other:
-
-```bash
-python scripts/train.py --config configs/train_profound_coarse_recall.yaml --exp-name recall_ftversky --fold 0 \
-  --train-split data/splits/5fold/fold_0/train.txt \
-  --val-split data/splits/5fold/fold_0/val.txt
-```
-
-This writes to `outputs/recall_ftversky/fold_0/`.
-
-
-## Stage-1 Coarse Proposal Checkpointing
-
-The current Stage-1 training policy treats the network as a high-recall coarse proposal model for Stage 2 prompts, not as the final segmentation model. By default, `configs/train_profound_coarse_recall_3090.yaml` monitors `val_coarse_score` for early stopping:
-
-```yaml
-early_stopping:
-  enabled: true
-  monitor: "val_coarse_score"
-  mode: "max"
-  patience: 10
-  min_delta: 0.0005
-```
-
-`coarse_score` is computed from lesion recall, positive-case Dice, and a small false-positive component penalty. This favors checkpoints that still find lesions and can produce useful box/point/uncertainty prompts.
-
-The trainer saves these checkpoints independently:
-
-- `best_by_val_coarse_score.pth`
-- `best_by_val_threshold_sweep_coarse_score.pth`
-- `best_by_val_lesion_recall.pth`
-- `best_by_val_positive_case_dice.pth`
-- `best_by_val_dice.pth`
-- `last.pth`
-
-Each validation epoch also runs a threshold sweep, configured for example as:
-
-```yaml
-threshold_sweep:
-  enabled: true
-  thresholds: [0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50]
-```
-
-`logs/train_log.csv` stores compact epoch-level metrics, while `logs/threshold_sweep_log.csv` stores one row per threshold per epoch.
-
-For single-case inference, keep segmentation reporting and prompt generation separate:
-
-```yaml
-inference:
-  segmentation_threshold: 0.50
-  prompt_generation_threshold: 0.15
-```
-
-The output `.npz` contains the coarse probability map plus both masks, so Stage 2 can use the lower prompt threshold without changing traditional segmentation reporting.
-
-Recall-oriented loss ablations are provided in:
-
-- `configs/recall_stronger_v1.yaml`: Tversky FN/FP = 0.8/0.2
-- `configs/recall_stronger_v2.yaml`: Tversky FN/FP = 0.9/0.1
-
-Summarize a completed run with:
-
-```bash
-python scripts/summarize_training_run.py   --run-dir outputs/coarse_score_es_3090/fold_0   --output outputs/reports/training_summary.md
-```
-
-For Stage 2 prompt generation, start from `best_by_val_threshold_sweep_coarse_score.pth` when it has high lesion recall and acceptable false positives per case; otherwise use `best_by_val_coarse_score.pth`.
-
-
-## Stage 2 Prompt-Conditioned Refinement V2
-
-Stage 2 is now a trainable coarse-to-fine refinement stage rather than a placeholder. It follows the direction used in promptable medical segmentation research:
-
-- PCaSAM first produces a coarse mask and then uses morphological post-processing to generate automatic bounding boxes for a prompt-guided model: https://www.nature.com/articles/s41746-025-01756-2
-- MedSAM shows that a bounding-box prompt gives strong spatial context for medical segmentation: https://www.nature.com/articles/s41467-024-44824-z
-- SAM-Med3D motivates fully volumetric promptable segmentation with 3D prompts: https://arxiv.org/abs/2310.15161
-
-Current Stage 2 design:
-
-- Stage 1 produces coarse probability maps from the ProFound-Conv coarse model.
-- `AutoPromptGenerator3D` / proposal post-processing converts coarse components into 3D boxes, center points, and optional uncertainty points.
-- `Stage2PromptDataset` crops proposal-centered 3D patches and returns image, label, coarse probability, box prior, point Gaussian prior, and objectness label.
-- `CoarsePromptRefinementModel` predicts a refined mask and an optional objectness score for proposal filtering/ranking.
-- Case-level evaluation merges refined proposal patches back to full volumes and reports Dice, precision, recall, lesion recall, components/case, false-positive components/case, and component precision.
-
-Key modules:
-
-- `src/models/prompts/auto_prompt_generator.py`: reusable 3D prompt generation from coarse probability maps.
-- `src/models/prompts/prompt_encoder_3d.py`: dense 3D prompt prior construction and prompt feature encoding.
-- `src/datasets/stage2_prompt_dataset.py`: proposal patch dataset with GT-overlap balancing for supervised training.
-- `src/models/refinement/coarse_prompt_refinement_model.py`: prompt-conditioned 3D mask refinement plus objectness head.
-- `scripts/train_stage2_refinement.py`: Stage-2 multi-task training with mask loss and objectness loss.
-- `scripts/evaluate_stage2_case_level.py`: merges proposal predictions back to case-level volumes and evaluates Stage-2 outputs.
-
-Prepare Stage-2 data for fold 0 using the selected Stage-1 checkpoint and fixed post-processing strategy:
-
-```bash
-python scripts/precompute_stage1_coarse.py \
-  --config configs/infer_single_case.yaml \
-  --split data/splits/5fold/fold_0/train.txt \
-  --output-dir outputs/coarse_score_es_3090/fold_0/stage2_data/train/coarse_predictions \
-  --report-dir outputs/coarse_score_es_3090/fold_0/stage2_data/train/proposal_reports
-
-python scripts/sweep_proposal_postprocess.py \
-  --component-json outputs/coarse_score_es_3090/fold_0/stage2_data/train/proposal_reports/component_details.json \
-  --output-dir outputs/coarse_score_es_3090/fold_0/stage2_data/train/postprocess_sweep \
-  --min-component-sizes 50 \
-  --min-max-probabilities 0.5 \
-  --top-k 5 \
-  --rank-by max_probability \
-  --include-gt-hit-in-prompts
-
-python scripts/precompute_stage1_coarse.py \
-  --config configs/infer_single_case.yaml \
-  --split data/splits/5fold/fold_0/val.txt \
-  --output-dir outputs/coarse_score_es_3090/fold_0/stage2_data/val/coarse_predictions \
-  --report-dir outputs/coarse_score_es_3090/fold_0/stage2_data/val/proposal_reports
-
-python scripts/sweep_proposal_postprocess.py \
-  --component-json outputs/coarse_score_es_3090/fold_0/stage2_data/val/proposal_reports/component_details.json \
-  --output-dir outputs/coarse_score_es_3090/fold_0/stage2_data/val/postprocess_sweep \
-  --min-component-sizes 50 \
-  --min-max-probabilities 0.5 \
-  --top-k 5 \
-  --rank-by max_probability \
-  --include-gt-hit-in-prompts
-```
-
-Train Stage 2 V2. The default output directory is `outputs/coarse_score_es_3090/fold_0/stage2_refinement_v2_objectness`, so it will not overwrite V1/V1-balanced runs:
-
-```bash
-python scripts/train_stage2_refinement.py --config configs/train_stage2_refinement.yaml
-```
-
-Evaluate the trained Stage-2 checkpoint at full-case level:
-
-```bash
-python scripts/evaluate_stage2_case_level.py \
-  --config configs/train_stage2_refinement.yaml \
-  --checkpoint outputs/coarse_score_es_3090/fold_0/stage2_refinement_v2_objectness/checkpoints/best_by_val_recall_safe_dice.pth \
-  --output-dir outputs/coarse_score_es_3090/fold_0/stage2_refinement_v2_objectness/case_level_eval \
-  --mask-threshold 0.5
-```
-
-For objectness experiments, add `--use-objectness-filter --objectness-threshold 0.5` to reject low-quality proposals, or `--weight-by-objectness` to softly weight merged patch probabilities. Do not enable these options for final reporting until a V2 checkpoint has trained the objectness head.
-
-
-
-## Output Layout Discipline
-
-All formal outputs are organized under `outputs/<experiment_name>/fold_<k>/`. See `docs/output_layout.md` before adding new experiments or debug outputs.
-
-
-## PCaSAM-3D-ProFound: 端到端统一模型
-
-PCaSAM-3D-ProFound 是本项目的核心创新方案，将三个关键技术统一到一个端到端可训练的模型中：
-
-1. **ProFound-Conv**（前列腺 mpMRI 基础模型）作为领域特定图像编码器
-2. **PCaSAM 风格的自动 3D 提示生成**：从粗分割分支自动产生 3D 框/点提示
-3. **SAM-Med3D 的提示编码器 + 掩码解码器**：基于提示的精细化分割
-
-### 架构
-
-```
-Input [B, 3, D, H, W] (T2W/ADC/HBV mpMRI)
-    │
-    ▼
-┌─ ProFound-Conv Encoder (预训练，冻结) ──────────────────┐
-│  stage1: [B, 96,  D/4,  H/4,  W/4]                     │
-│  stage2: [B, 192, D/8,  H/8,  W/8]                     │
-│  stage3: [B, 384, D/16, H/16, W/16]                    │
-│  stage4: [B, 768, D/32, H/32, W/32]                    │
-└──────────────────────────────────────────────────────────┘
-    │                           │
-    ▼                           ▼
-┌─ Coarse Branch ─┐     ┌─ Feature Bridge ─────────────┐
-│  FPN → logits   │     │  FPN → [B, 384, 8, 8, 8]    │
-│  [B,1,D,H,W]   │     │  (SAM 嵌入空间)              │
-└─────────────────┘     └──────────────────────────────┘
-    │                           │
-    ▼                           │
-┌─ Auto Prompt 3D ─┐           │
-│  point_coords     │           │
-│  mask_prior       │           │
-└───────────────────┘           │
-    │                           │
-    ▼                           ▼
-┌─ SAM-Med3D Prompt Encoder ─┐  │
-│  sparse_emb, dense_emb     │  │
-└────────────────────────────┘  │
-    │                           │
-    ▼                           ▼
-┌─ SAM-Med3D Mask Decoder ─────────────────────────────┐
-│  TwoWayTransformer3D + hypernetwork MLP              │
-│  → refined_logits [B, 1, D, H, W]                   │
-│  → iou_pred [B, 1]                                   │
-└──────────────────────────────────────────────────────┘
-```
-
-### 关键模块
-
-- `src/models/pcasam3d_profound/pcasam3d_profound_model.py`: 统一模型主类
-- `src/models/pcasam3d_profound/feature_bridge.py`: ProFound 多尺度特征 → SAM 384 维嵌入空间
-- `src/models/pcasam3d_profound/coarse_branch.py`: 轻量级粗分割分支（辅助监督）
-- `src/models/pcasam3d_profound/auto_prompt_3d.py`: PCaSAM 风格自动 3D 提示生成
-- `src/models/pcasam3d_profound/prompt_adapter.py`: 提示格式适配（归一化坐标 → SAM 绝对坐标）
-- `src/models/pcasam3d_profound/pcasam3d_loss.py`: 多任务损失（精细化 + 粗分割 + IoU 预测）
-- `src/datasets/pcasam3d_dataset.py`: 端到端训练数据集（病灶感知采样 + 128³ resize）
-
-### 训练
-
-```bash
-# 单折训练
 python scripts/train_pcasam3d_profound.py \
-  --config configs/train_pcasam3d_profound.yaml \
+  --config configs/train_pcasam3d_stage1_coarse_v4_data_opt.yaml \
   --fold 0 \
   --train-split data/splits/5fold/fold_0/train.txt \
-  --val-split data/splits/5fold/fold_0/val.txt
-
-# 5 折交叉验证
-bash scripts/train_pcasam3d_5fold.sh configs/train_pcasam3d_profound.yaml pcasam3d_v1
+  --val-split data/splits/5fold/fold_0/val.txt \
+  --exp-name pcasam3d_stage1_coarse_v4_data_opt
 ```
 
-### 评估
+**Checkpoint 选择**：用 `best_by_val_threshold_sweep_coarse_score.pth` 作为 Stage 2 的 prompt 来源（多阈值扫描下的最优操作点）。
+
+---
+
+### Stage 2：提示条件化精细化
+
+从 Stage 1 checkpoint 继续训练，解冻 FeatureBridge + ModalityCrossAttention + HighResRefinement，SAM 解码器主体保持冻结。
+
+**当前推荐配置**：`configs/train_pcasam3d_stage2_precision_fp_v4_data_opt.yaml`
+
+关键设计：
+- **Prompt Curriculum**：前 8 epoch 使用 GT 提示（100%），之后退火到 30%，让模型逐步适应自动提示的噪声
+- **GT Prompt 增强**：GT 边界框 + 随机抖动（jitter_std=0.06），提升对不完美提示的鲁棒性
+- **Prompt Dropout**：随机丢弃点/框提示，防止模型依赖单一提示类型
+- 损失：Dice + Focal-Tversky（FN=0.6, FP=0.4）+ BCE + 边界 BCE
 
 ```bash
-python scripts/evaluate_pcasam3d_profound.py \
-  --config configs/train_pcasam3d_profound.yaml \
-  --checkpoint outputs/pcasam3d_profound/fold_0/checkpoints/best_by_val_recall_safe_dice.pth \
-  --split data/splits/5fold/fold_0/val.txt \
-  --output-dir outputs/pcasam3d_profound/fold_0/evaluation
+python scripts/train_pcasam3d_profound.py \
+  --config configs/train_pcasam3d_stage2_precision_fp_v4_data_opt.yaml \
+  --fold 0 \
+  --train-split data/splits/5fold/fold_0/train.txt \
+  --val-split data/splits/5fold/fold_0/val.txt \
+  --exp-name pcasam3d_stage2_precision_fp_v4_data_opt
 ```
 
-### 调试
+**Checkpoint 选择**：用 `best_by_val_refined_sweep_score.pth`（多阈值扫描下综合 Dice/Recall/FP 最优）。
+
+---
+
+## 评估
+
+### 验证集评估（训练中自动进行）
+
+训练脚本每 epoch 自动在验证集上评估，关键指标：
+
+| 指标 | 说明 |
+|------|------|
+| `val_lesion_recall` | 病灶级召回率（连通域级别） |
+| `val_positive_case_dice` | 阳性病例的平均 Dice |
+| `val_fp_components_per_case` | 每 case 假阳性连通域数 |
+| `val_global_dice` | 全局体素级 Dice |
+| `val_refined_sweep_best_score` | 多阈值扫描综合评分（Stage 2 主要选择指标） |
+
+### 单 case 推理
 
 ```bash
-# Shape 测试（不需要 ProFound 权重）
+python scripts/infer_single_case.py \
+  --config configs/infer_single_case.yaml \
+  --npz-path ../picai_preprocessing_project/data/processed/picai_profound_prompt_v2/all/10005_1000005.npz \
+  --checkpoint outputs/pcasam3d_stage2_precision_fp_v4_data_opt/fold_0/checkpoints/best_by_val_refined_sweep_score.pth
+```
+
+---
+
+## 调试
+
+**Shape 测试**（不需要 ProFound/SAM 权重）：
+
+```bash
 python scripts/debug_pcasam3d_forward.py --mode shapes
-
-# 完整模型测试（需要 ProFound + SAM-Med3D 权重）
-python scripts/debug_pcasam3d_forward.py --mode full --config configs/train_pcasam3d_profound.yaml
 ```
 
-### 训练策略
-
-1. **阶段 1**：冻结 ProFound 编码器，训练 Feature Bridge + Coarse Branch + SAM Decoder（100 epochs）
-2. **阶段 2**：解冻 ProFound 最后 2 个 stage，低学习率端到端微调（50 epochs）
+**完整前向测试**（需要配置权重路径）：
 
 ```bash
-# 阶段 2 微调
-python scripts/train_pcasam3d_profound.py \
-  --config configs/train_pcasam3d_profound_finetune.yaml \
-  --fold 0 \
-  --train-split data/splits/5fold/fold_0/train.txt \
-  --val-split data/splits/5fold/fold_0/val.txt
+python scripts/debug_pcasam3d_forward.py \
+  --mode full \
+  --config configs/train_pcasam3d_stage1_coarse_v4_data_opt.yaml
 ```
 
-### 模型参数
+**训练摘要**：
 
-- 总参数: ~66.8M
-- 可训练参数（冻结编码器）: ~37.5M
-- ProFound-Conv 编码器: ~28.6M（冻结）
-- Feature Bridge + Coarse Branch: ~5.2M
-- SAM Prompt Encoder + Mask Decoder: ~32.3M
+```bash
+python scripts/summarize_training_run.py \
+  --run-dir outputs/pcasam3d_stage1_coarse_v4_data_opt/fold_0 \
+  --output outputs/pcasam3d_stage1_coarse_v4_data_opt/fold_0/reports/training_summary.md
+```
 
-### 损失函数
+---
 
-多任务损失 = refined_weight × L_refined + coarse_weight × L_coarse + iou_weight × L_iou
+## 实验结果
 
-- L_refined = Dice + Focal-Tversky (FN=0.7, FP=0.3) + BCE (pos_weight=3.0)
-- L_coarse = Dice + BCE (pos_weight=2.0)
-- L_iou = MSE(iou_pred, actual_dice)
+详细实验记录见 `docs/experiment_summary.md` 和 `Experiment Log.xlsx`。
 
-### 与其他方案的对比
+### Stage 1 fold_0 结果
 
-| 方案 | 编码器 | 提示方式 | 解码器 | 端到端 |
-|------|--------|----------|--------|--------|
-| Stage-1 ProFound-Conv | ProFound-Conv | 无 | UNetR3D | 否 |
-| Stage-2 V2 Refinement | 无（用粗分割特征） | 手动后处理 | 自定义 CNN | 否 |
-| Stage-2 SAM-Med3D V1 | SAM-Med3D ViT | 手动后处理 | SAM Mask Decoder | 否 |
-| **PCaSAM-3D-ProFound** | **ProFound-Conv** | **自动可微分** | **SAM Mask Decoder** | **是** |
+| 实验 | coarse_score | Lesion Recall | Pos Dice | FP/case |
+|------|-------------|---------------|----------|---------|
+| v3_balanced | **1.075** | **0.947** | 0.451 | 1.878 |
+| **v4_data_opt** ✓ | 1.054 | 0.929 | **0.457** | 2.034 |
 
-核心优势：
-- 端到端训练，梯度从 SAM 解码器流回粗分割分支，自动优化提示质量
-- ProFound-Conv 提供领域特定的前列腺 MRI 特征（优于通用 ViT）
-- SAM-Med3D 的 Mask Decoder 提供强大的提示条件化分割能力
-- 无需手动后处理步骤，推理时自动生成提示
+v4 选为推荐：数据处理与 Stage 2 一致，gland-aware 负采样使 global_dice 更高。
+
+### Stage 2 fold_0 结果
+
+| 实验 | sweep_score | Pos Dice | Lesion Recall | FP/case | Global Dice |
+|------|------------|----------|---------------|---------|-------------|
+| v2_balanced | **0.966** | **0.469** | 0.877 | 1.081 | 0.520 |
+| v3_align_adapter | 0.942 | 0.458 | 0.888 | 1.284 | 0.499 |
+| v3a_align_only | 0.949 | 0.461 | **0.900** | 1.260 | 0.497 |
+| v3c_selfgated | 0.946 | 0.459 | 0.888 | **1.230** | 0.499 |
+| **v4_data_opt** ✓ | 0.962 | 0.454 | 0.888 | 1.020 | **0.539** |
+
+v4 的 global_dice 和 FP/case 均最优，与 Stage 1 v4 数据处理完全一致。
+
+### 消融结论
+
+- **Alignment + Adapter 模块无效**：v3 系列全部低于 v2 baseline，已在 v4 中禁用
+- **Gland-aware 负采样有效**：显著降低 FP/case，提升 global_dice
+- **Objectness head 失效**：所有实验 pos/neg 概率差 <0.001，已禁用（`objectness_weight: 0.0`）
+
+---
+
+## 输出目录规范
+
+所有实验输出统一放在 `outputs/<experiment_name>/fold_<k>/`，详见 `docs/output_layout.md`。
+
+```
+outputs/
+├── pcasam3d_stage1_<variant>/fold_<k>/
+│   ├── checkpoints/   # *.pth（不上传 git）
+│   └── logs/          # train_log.csv（不上传 git）
+└── pcasam3d_stage2_<variant>/fold_<k>/
+    ├── checkpoints/
+    └── logs/
+```
+
+命名规则：
+- `pcasam3d_stage1_<variant>` — Stage 1 粗分割实验
+- `pcasam3d_stage2_<variant>` — Stage 2 精细化实验
+- 不含硬件信息（不写 `_3090`、`_a100`）
+
+---
+
+## 参考文献
+
+- **ProFound**: Prostate mpMRI foundation model with ConvNeXtV2 backbone.
+- **PI-CAI**: Prostate Imaging: Cancer AI challenge dataset. https://pi-cai.grand-challenge.org
+- **PCaSAM**: Automatic prompt generation from coarse prostate cancer masks. *Nature Digital Medicine* 2025. https://www.nature.com/articles/s41746-025-01756-2
+- **MedSAM**: Box-prompt medical image segmentation. *Nature Communications* 2024. https://www.nature.com/articles/s41467-024-44824-z
+- **SAM-Med3D**: Volumetric 3D promptable medical segmentation. arXiv 2310.15161. https://arxiv.org/abs/2310.15161
+- **Tversky Loss**: arXiv 1706.05721 — β=0.7 optimal for small lesion recall.
+- **Focal Tversky**: arXiv 1810.07842 — γ=4/3 focuses on hard examples.
